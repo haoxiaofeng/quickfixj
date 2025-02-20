@@ -30,45 +30,27 @@ import quickfix.Session;
 import quickfix.SessionID;
 import quickfix.SessionNotFound;
 import quickfix.UnsupportedMessageType;
-import quickfix.field.AvgPx;
-import quickfix.field.ClOrdID;
-import quickfix.field.CumQty;
-import quickfix.field.ExecID;
-import quickfix.field.ExecTransType;
-import quickfix.field.ExecType;
-import quickfix.field.LastPx;
-import quickfix.field.LastShares;
-import quickfix.field.LeavesQty;
-import quickfix.field.NoRelatedSym;
-import quickfix.field.OrdStatus;
-import quickfix.field.OrdType;
-import quickfix.field.OrderID;
-import quickfix.field.OrderQty;
-import quickfix.field.OrigClOrdID;
-import quickfix.field.Price;
-import quickfix.field.SenderCompID;
-import quickfix.field.Side;
-import quickfix.field.SubscriptionRequestType;
-import quickfix.field.Symbol;
-import quickfix.field.TargetCompID;
-import quickfix.field.Text;
-import quickfix.field.TimeInForce;
+import quickfix.field.*;
 import quickfix.fix42.ExecutionReport;
 import quickfix.fix42.MarketDataRequest;
+import quickfix.fix42.MarketDataRequestReject;
 import quickfix.fix42.MarketDataSnapshotFullRefresh;
 import quickfix.fix42.NewOrderSingle;
 import quickfix.fix42.OrderCancelRequest;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
-import quickfix.field.CxlRejResponseTo;
-import quickfix.field.MDEntryPx;
-import quickfix.field.MDEntryType;
-import quickfix.field.MDReqID;
-import quickfix.field.OrdRejReason;
+import java.util.Date;
+import java.util.List;
+import java.util.stream.Stream;
+
 import quickfix.fix42.OrderCancelReject;
 
 public class Application extends MessageCracker implements quickfix.Application {
-    private final OrderMatcher orderMatcher = new OrderMatcher();
+    private OrderMatcher orderMatcher = new OrderMatcher();
     private final IdGenerator generator = new IdGenerator();
 
     public void fromAdmin(Message message, SessionID sessionId) throws FieldNotFound,
@@ -108,7 +90,7 @@ public class Application extends MessageCracker implements quickfix.Application 
             Order order = new Order(clOrdId, symbol, senderCompId, targetCompId, side, ordType,
                     price, (int) qty);
 
-            processOrder(order);
+            processOrder(order, sessionID);
         } catch (Exception e) {
             rejectOrder(targetCompId, senderCompId, clOrdId, symbol, side, e.getMessage());
         }
@@ -133,35 +115,35 @@ public class Application extends MessageCracker implements quickfix.Application 
         }
     }
 
-    private void processOrder(Order order) {
+    private void processOrder(Order order, SessionID sessionID) {
         if (orderMatcher.insert(order)) {
-            acceptOrder(order);
+            acceptOrder(order, sessionID);
 
             ArrayList<Order> orders = new ArrayList<>();
             orderMatcher.match(order.getSymbol(), orders);
 
             while (orders.size() > 0) {
-                fillOrder(orders.remove(0));
+                fillOrder(orders.remove(0), sessionID);
             }
             orderMatcher.display(order.getSymbol());
         } else {
-            rejectOrder(order);
+            rejectOrder(order, sessionID);
         }
     }
 
-    private void rejectOrder(Order order) {
-        updateOrder(order, OrdStatus.REJECTED);
+    private void rejectOrder(Order order, SessionID sessionID) {
+        updateOrder(order, OrdStatus.REJECTED, sessionID);
     }
 
-    private void acceptOrder(Order order) {
-        updateOrder(order, OrdStatus.NEW);
+    private void acceptOrder(Order order, SessionID sessionID) {
+        updateOrder(order, OrdStatus.NEW, sessionID);
     }
 
-    private void cancelOrder(Order order) {
-        updateOrder(order, OrdStatus.CANCELED);
+    private void cancelOrder(Order order, SessionID sessionID) {
+        updateOrder(order, OrdStatus.CANCELED, sessionID);
     }
 
-    private void updateOrder(Order order, char status) {
+    private void updateOrder(Order order, char status, SessionID sessionID) {
         String targetCompId = order.getOwner();
         String senderCompId = order.getTarget();
 
@@ -180,13 +162,14 @@ public class Application extends MessageCracker implements quickfix.Application 
         }
 
         try {
-            Session.sendToTarget(fixOrder, senderCompId, targetCompId);
+            Session.sendToTarget(fixOrder, sessionID);
         } catch (SessionNotFound e) {
+            e.printStackTrace();
         }
     }
 
-    private void fillOrder(Order order) {
-        updateOrder(order, order.isFilled() ? OrdStatus.FILLED : OrdStatus.PARTIALLY_FILLED);
+    private void fillOrder(Order order, SessionID sessionID) {
+        updateOrder(order, order.isFilled() ? OrdStatus.FILLED : OrdStatus.PARTIALLY_FILLED, sessionID);
     }
 
     public void onMessage(OrderCancelRequest message, SessionID sessionID) throws FieldNotFound,
@@ -197,7 +180,7 @@ public class Application extends MessageCracker implements quickfix.Application 
         Order order = orderMatcher.find(symbol, side, id);
         if (order != null) {
             order.cancel();
-            cancelOrder(order);
+            cancelOrder(order, sessionID);
             orderMatcher.erase(order);
         } else {
             OrderCancelReject fixOrderReject = new OrderCancelReject(new OrderID("NONE"), new ClOrdID(message.getString(ClOrdID.FIELD)),
@@ -233,19 +216,37 @@ public class Application extends MessageCracker implements quickfix.Application 
             message.getGroup(i, noRelatedSyms);
             String symbol = noRelatedSyms.getString(Symbol.FIELD);
             fixMD.setString(Symbol.FIELD, symbol);
+            
+            Market market = orderMatcher.getMarket(symbol);
+            Stream.concat(market.getBidOrders().stream(), market.getAskOrders().stream()).forEach(ord -> {
+                MarketDataSnapshotFullRefresh.NoMDEntries noMDEntries = new MarketDataSnapshotFullRefresh.NoMDEntries();
+                noMDEntries.set(new OrderID(ord.getClientOrderId()));
+                noMDEntries.set(new MDEntryType(ord.getSide() == Side.BUY ? MDEntryType.BID : MDEntryType.OFFER));
+                noMDEntries.set(new MDEntryPx(ord.getPrice()));
+                noMDEntries.set(new MDEntrySize(ord.getOpenQuantity()));
+                noMDEntries.set(new MDMkt("QF")); // QF: QuickFix.
+                LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(ord.getEntryTime()), ZoneId.systemDefault());
+                noMDEntries.set(new MDEntryDate(dateTime.toLocalDate()));
+                noMDEntries.set(new MDEntryTime(dateTime.toLocalTime()));
+                fixMD.addGroup(noMDEntries);
+            });
         }
         
-        MarketDataSnapshotFullRefresh.NoMDEntries noMDEntries = new MarketDataSnapshotFullRefresh.NoMDEntries();
-        noMDEntries.setChar(MDEntryType.FIELD, '0');
-        noMDEntries.setDouble(MDEntryPx.FIELD, 123.45);
-        fixMD.addGroup(noMDEntries);
         String senderCompId = message.getHeader().getString(SenderCompID.FIELD);
         String targetCompId = message.getHeader().getString(TargetCompID.FIELD);
         fixMD.getHeader().setString(SenderCompID.FIELD, targetCompId);
         fixMD.getHeader().setString(TargetCompID.FIELD, senderCompId);
         try {
-            Session.sendToTarget(fixMD, targetCompId, senderCompId);
+            Message sentMessage = fixMD;
+            if (!fixMD.hasGroup(new MarketDataSnapshotFullRefresh.NoMDEntries().getFieldTag())) {
+                MarketDataRequestReject reject = new MarketDataRequestReject(new MDReqID(message.getString(MDReqID.FIELD)));
+                reject.getHeader().setString(SenderCompID.FIELD, targetCompId);
+                reject.getHeader().setString(TargetCompID.FIELD, senderCompId);
+                sentMessage = reject;
+            }
+            Session.sendToTarget(sentMessage, sessionID);
         } catch (SessionNotFound e) {
+            e.printStackTrace();
         }
     }
 
@@ -270,5 +271,9 @@ public class Application extends MessageCracker implements quickfix.Application 
 
     public OrderMatcher orderMatcher() {
         return orderMatcher;
+    }
+    
+    public void setOrderMatcher(OrderMatcher orderMatcher) {
+        this.orderMatcher = orderMatcher;
     }
 }

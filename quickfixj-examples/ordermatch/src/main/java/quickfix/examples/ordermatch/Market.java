@@ -22,12 +22,13 @@ package quickfix.examples.ordermatch;
 import quickfix.field.OrdType;
 import quickfix.field.Side;
 
+import java.io.Serializable;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
-public class Market {
+public class Market implements Serializable {
 
     private final List<Order> bidOrders = new ArrayList<>();
     private final List<Order> askOrders = new ArrayList<>();
@@ -81,8 +82,9 @@ public class Market {
             for (int i = 0; i < orders.size(); i++) {
                 Order o = orders.get(i);
                 if ((descending ? order.getPrice() > o.getPrice() : order.getPrice() < o.getPrice())
-                        && order.getEntryTime() < o.getEntryTime()) {
+                        && order.getEntryTime() > o.getEntryTime()) {
                     orders.add(i, order);
+                    return true;
                 }
             }
             orders.add(order);
@@ -125,5 +127,13 @@ public class Market {
                     + qtyFormat.format(order.getOpenQuantity()) + " " + order.getOwner() + " "
                     + new Date(order.getEntryTime()));
         }
+    }
+    
+    public List<Order> getBidOrders() {
+        return bidOrders;
+    }
+    
+    public List<Order> getAskOrders() {
+        return askOrders;
     }
 }

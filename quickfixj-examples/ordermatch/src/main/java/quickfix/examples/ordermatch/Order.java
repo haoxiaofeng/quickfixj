@@ -21,7 +21,9 @@ package quickfix.examples.ordermatch;
 
 import quickfix.field.Side;
 
-public class Order {
+import java.io.Serializable;
+
+public class Order implements Serializable {
     private final long entryTime;
     private final String clientOrderId;
     private final String symbol;

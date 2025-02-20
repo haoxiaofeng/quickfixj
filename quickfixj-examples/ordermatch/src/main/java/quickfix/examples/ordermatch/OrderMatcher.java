@@ -19,13 +19,14 @@
 
 package quickfix.examples.ordermatch;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 
-public class OrderMatcher {
+public class OrderMatcher implements Serializable {
     private final HashMap<String, Market> markets = new HashMap<>();
 
-    private Market getMarket(String symbol) {
+    public Market getMarket(String symbol) {
         return markets.computeIfAbsent(symbol, k -> new Market());
     }
 

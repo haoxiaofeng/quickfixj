@@ -27,10 +27,15 @@ import quickfix.SessionSettings;
 import quickfix.SocketAcceptor;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.time.LocalDateTime;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class Main {
     public static void main(String[] args) {
@@ -52,7 +57,23 @@ public class Main {
             LogFactory logFactory = new ScreenLogFactory(settings);
             SocketAcceptor acceptor = new SocketAcceptor(application, storeFactory, settings,
                     logFactory, new DefaultMessageFactory());
-
+            // 恢复订单簿
+            String serializedFile = settings.getString(FileStoreFactory.SETTING_FILE_STORE_PATH) + File.separator + "ordermatch.bin";
+            if (new File(serializedFile).exists()) {
+                OrderMatcher orderMatcher = (OrderMatcher) SerializationUtils.deserializeFromFile(serializedFile);
+                application.setOrderMatcher(orderMatcher);
+                System.out.println(LocalDateTime.now() + ": Restored ordermatch");
+            }
+            
+            // 定期保存订单簿
+            new ScheduledThreadPoolExecutor(1).scheduleAtFixedRate(() -> {
+	            try {
+		            serializeOrderMatch(application, settings);
+	            } catch (Exception e) {
+		            e.printStackTrace();
+	            }
+            }, 60, 60, TimeUnit.SECONDS);
+            
             BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
             acceptor.start();
             label:
@@ -68,6 +89,7 @@ public class Main {
                             break label;
                         default:
                             application.orderMatcher().display();
+                            serializeOrderMatch(application, settings);
                             break;
                     }
                 }
@@ -87,4 +109,10 @@ public class Main {
         }
     }
 
+    private static void serializeOrderMatch(Application application, SessionSettings settings) throws Exception {
+        SerializationUtils.serializeToFile(application.orderMatcher(),
+                settings.getString(FileStoreFactory.SETTING_FILE_STORE_PATH) +
+                File.separator + "ordermatch.bin");
+        System.out.println(LocalDateTime.now() + ": Saved ordermatch");
+    }
 }
